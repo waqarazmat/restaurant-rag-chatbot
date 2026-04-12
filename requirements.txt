@@ -1,0 +1,10 @@
+firecrawl-py
+firecrawl
+deepl
+pinecone
+langchain
+langchain-openai
+langchain-text-splitters
+streamlit
+langchain_cohere
+groq
