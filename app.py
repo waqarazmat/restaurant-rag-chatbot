@@ -15,10 +15,15 @@ st.caption("Ask me anything about Grand Café Drugstore")
 
 # 1. API Keys & Config — supports both local .env and Streamlit Cloud secrets
 def get_secret(key, default=None):
+    # Try Streamlit secrets (Streamlit Cloud)
     try:
-        return st.secrets[key]
+        val = st.secrets.get(key)
+        if val is not None:
+            return val
     except Exception:
-        return os.environ.get(key, default)
+        pass
+    # Fall back to environment variables (local .env)
+    return os.environ.get(key, default)
 
 PINECONE_API_KEY = get_secret("PINECONE_API_KEY")
 COHERE_API_KEY = get_secret("COHERE_API_KEY")
