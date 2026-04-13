@@ -15,10 +15,11 @@ st.caption("Ask me anything about Grand Café Drugstore")
 
 # 1. API Keys & Config — supports both local .env and Streamlit Cloud secrets
 def get_secret(key, default=None):
-    try:
+    # Try Streamlit secrets (Streamlit Cloud)
+    if hasattr(st, 'secrets') and key in st.secrets:
         return st.secrets[key]
-    except Exception:
-        return os.environ.get(key, default)
+    # Fall back to environment variables (local .env)
+    return os.environ.get(key, default)
 
 PINECONE_API_KEY = get_secret("PINECONE_API_KEY")
 COHERE_API_KEY = get_secret("COHERE_API_KEY")
@@ -26,7 +27,7 @@ OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 PINECONE_INDEX = get_secret("PINECONE_INDEX", "restaurant-rag")
 
 if not all([PINECONE_API_KEY, COHERE_API_KEY, OPENAI_API_KEY]):
-    st.error("❌ Please set PINECONE_API_KEY, COHERE_API_KEY, and OPENAI_API_KEY in your .env file!")
+    st.error("❌ Missing API keys. Keys found in st.secrets: " + str(list(st.secrets.keys()) if hasattr(st, 'secrets') else "st.secrets unavailable"))
     st.stop()
 
 # 2. Static system prompt (base — context & history injected per query)
