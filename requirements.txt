@@ -8,3 +8,5 @@ langchain-text-splitters
 streamlit
 langchain_cohere
 groq
+python-dotenv
+openai
