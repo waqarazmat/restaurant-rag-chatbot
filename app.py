@@ -4,8 +4,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from pinecone import Pinecone
 from langchain_cohere import CohereEmbeddings
-import groq
-from groq import Groq
+from openai import OpenAI
 
 load_dotenv()
 
@@ -17,11 +16,11 @@ st.caption("Ask me anything about Grand Café Drugstore")
 # 1. API Keys & Config
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "restaurant-rag")
 
-if not all([PINECONE_API_KEY, COHERE_API_KEY, GROQ_API_KEY]):
-    st.error("❌ Please set PINECONE_API_KEY, COHERE_API_KEY, and GROQ_API_KEY in your .env file!")
+if not all([PINECONE_API_KEY, COHERE_API_KEY, OPENAI_API_KEY]):
+    st.error("❌ Please set PINECONE_API_KEY, COHERE_API_KEY, and OPENAI_API_KEY in your .env file!")
     st.stop()
 
 # 2. Static system prompt (base — context & history injected per query)
@@ -35,9 +34,10 @@ SYSTEM_PROMPT_BASE = (
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "- ONLY recommend or mention food/drink items that appear in the retrieved context below.\n"
     "- NEVER invent, assume, or approximate any item, price, or ingredient not present in the context.\n"
-    "- If a requested item is not found in the context, say honestly: "
-    "'I couldn't find that on our menu. For the most up-to-date details, "
-    "please visit drugstorehasselt.be or contact us at info@drugstorehasselt.be.'\n"
+    "- If a specific item is not found in the context, do NOT say 'I couldn't find it'. "
+    "Instead, offer a soft helpful response — suggest related confirmed items, explain what IS available, "
+    "and invite the guest to ask further. Example: 'While our menu doesn't specifically list that, "
+    "you might enjoy [related confirmed item] — or for full details, visit drugstorehasselt.be or reach us at info@drugstorehasselt.be.'\n"
     "- If the context contains partial information, share only what is confirmed — never fill gaps with guesses.\n"
     "- ⚠️ EXCEPTION: The items listed inside the MENU REQUEST HANDLER section (STEP 2 and STEP 3) "
     "are pre-verified, trusted menu items. When a menu overview is requested, display ALL of them "
@@ -85,14 +85,21 @@ SYSTEM_PROMPT_BASE = (
     "- Low energy / tired / need a boost → Hearty items: burgers, steak, pasta, grilled meats, stews.\n"
     "- Sweet craving / mood lifter → Desserts, waffles, pancakes, milkshakes, ice cream coupes.\n"
     "- Sharing / group / aperitif → Tapas boards, oysters, antipasti, pizza, sharing platters.\n"
-    "- Vegetarian / vegan → Filter from context; if unclear, redirect to info@drugstorehasselt.be.\n"
+    "- Vegetarian / vegan → Our menu explicitly labels vegetarian and vegan dishes. "
+    "Suggest confirmed labeled items from the context such as Vegetarian Lasagna, Veggie Burger, "
+    "Vegan Pizza, Pizza Vegetariana, Thai Veggie Salad, Vegan Caesar Salad, Veggie Omelet, Vegan Chicken Piadina. "
+    "Always confirm with: 'Please inform your waiter of any dietary requirements when you visit.'\n"
     "- Just a drink → Coffee menu, milkshakes, suggest a light pairing if context supports it.\n\n"
 
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "🗣️  TONE & LANGUAGE RULES\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "- Be warm, welcoming, and conversational — like a friendly host, never a cold FAQ bot.\n"
-    "- Mirror the guest's language: if they write in Dutch, French, or Urdu — respond in kind.\n"
+    "- Mirror the guest's language: if they write in Dutch, French, Urdu, Arabic, or any other language — respond fully in that language.\n"
+    "- ⚠️ LANGUAGE PARITY RULE: The quality, helpfulness, and detail of your response must be IDENTICAL regardless of what language the guest uses. "
+    "A guest asking in Dutch or Urdu deserves the exact same rich, helpful answer as a guest asking in French or English. "
+    "NEVER give a shorter, vaguer, or more dismissive response just because the language is not French or English.\n"
+    "- The retrieved context is in English — translate relevant details into the guest's language when responding.\n"
     "- Keep responses concise but complete. Avoid filler and repetition.\n"
     "- Never say 'As an AI...' or use robotic disclaimers.\n\n"
 
@@ -151,12 +158,12 @@ SYSTEM_PROMPT_BASE = (
 @st.cache_resource
 def init_clients():
     embeddings = CohereEmbeddings(model="embed-multilingual-v3.0", cohere_api_key=COHERE_API_KEY)
-    groq_client = Groq(api_key=GROQ_API_KEY)
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
     pc = Pinecone(api_key=PINECONE_API_KEY)
     index = pc.Index(PINECONE_INDEX)
-    return embeddings, groq_client, index
+    return embeddings, openai_client, index
 
-embeddings, groq_client, index = init_clients()
+embeddings, openai_client, index = init_clients()
 
 # 4. Initialize Chat History
 if "messages" not in st.session_state:
@@ -238,8 +245,18 @@ if user_query := st.chat_input("How can I help you today?"):
     with st.chat_message("assistant"):
         with st.spinner("Searching and thinking..."):
             try:
-                # Step A: Embed the user query
-                query_vector = embeddings.embed_query(user_query)
+                # Step A: Translate query to English for better Pinecone matching,
+                # then embed (multilingual model handles cross-lingual but English→English is most accurate)
+                translation_response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Translate the following text to English. Return ONLY the translated text, nothing else. If it is already in English, return it as-is."},
+                        {"role": "user", "content": user_query}
+                    ],
+                    temperature=0
+                )
+                query_in_english = translation_response.choices[0].message.content.strip()
+                query_vector = embeddings.embed_query(query_in_english)
 
                 # Step B: Retrieve top 12 matching chunks from Pinecone
                 search_results = index.query(
@@ -279,9 +296,12 @@ if user_query := st.chat_input("How can I help you today?"):
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "🚫  FALLBACK — When You Don't Know\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "If the answer is not in the retrieved context AND not covered by the rules above, respond with:\n"
-                    "'I apologize, but I couldn't find information about that in our records. "
-                    "For further assistance, please reach us at info@drugstorehasselt.be or visit drugstorehasselt.be.'\n\n"
+                    "If the answer is not in the retrieved context AND not covered by the rules above:\n"
+                    "- NEVER say 'I couldn't find' or 'I don't have information about that'.\n"
+                    "- Instead, acknowledge the question warmly, suggest the closest relevant thing you DO know, "
+                    "and invite them to reach out for specifics. "
+                    "Example: 'That's a great question! For the most accurate details, I'd recommend reaching out "
+                    "directly at info@drugstorehasselt.be or visiting drugstorehasselt.be — our team will be happy to help!'\n\n"
 
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "📂  MENU CONTEXT (Retrieved from Knowledge Base)\n"
@@ -291,36 +311,19 @@ if user_query := st.chat_input("How can I help you today?"):
                     "If it's not in the context above, it does not exist for the purposes of this conversation."
                 )
 
-                # Step E: Call Groq LLM (with retry on rate limit)
-                answer = None
-                for attempt in range(3):
-                    try:
-                        response = groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_query}
-                            ],
-                            temperature=0.3
-                        )
-                        answer = response.choices[0].message.content
-                        break
-                    except groq.RateLimitError:
-                        if attempt < 2:
-                            time.sleep(10)
-                        else:
-                            raise
+                # Step E: Call GPT-4o-mini
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_query}
+                    ],
+                    temperature=0.3
+                )
+                answer = response.choices[0].message.content
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
-                if answer:
-                    st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-
-            except groq.APIConnectionError:
-                st.error("❌ Could not connect to Groq. Check your internet connection.")
-            except groq.AuthenticationError:
-                st.error("❌ Invalid Groq API key. Please check your GROQ_API_KEY.")
-            except groq.RateLimitError:
-                st.error("⚠️ Groq rate limit reached. Please wait a moment and try again.")
             except Exception as e:
                 st.error(f"An error occurred: {e}")
             except Exception as e:
