@@ -13,11 +13,17 @@ st.set_page_config(page_title="Drugstore Chatbot", page_icon="🤖", layout="cen
 st.title("🤖 Grand Café Drugstore AI Assistant")
 st.caption("Ask me anything about Grand Café Drugstore")
 
-# 1. API Keys & Config
-PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "restaurant-rag")
+# 1. API Keys & Config — supports both local .env and Streamlit Cloud secrets
+def get_secret(key, default=None):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.environ.get(key, default)
+
+PINECONE_API_KEY = get_secret("PINECONE_API_KEY")
+COHERE_API_KEY = get_secret("COHERE_API_KEY")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
+PINECONE_INDEX = get_secret("PINECONE_INDEX", "restaurant-rag")
 
 if not all([PINECONE_API_KEY, COHERE_API_KEY, OPENAI_API_KEY]):
     st.error("❌ Please set PINECONE_API_KEY, COHERE_API_KEY, and OPENAI_API_KEY in your .env file!")
